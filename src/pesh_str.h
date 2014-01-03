@@ -17,6 +17,11 @@
 
 	You should have received a copy of the GNU General Public License
 	along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+	--
+	
+	This product includes PHP software, freely available from 
+	<http://www.php.net/software/>.
 */
 
 #include <string.h>
