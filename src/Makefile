@@ -55,7 +55,7 @@ ifeq ($(PLATFORM_OS), Darwin)
 	override CFLAGS += -Wno-deprecated-declarations
 endif
 
-PROGS = readpe rva2ofs ofs2rva pehash pesec pescan pepack pestr pedis peres
+PROGS = readpe rva2ofs ofs2rva pehash pesec pescan pepack pestr pedis peres pesh
 SHAREDIR = $(datadir)/pev
 LIBPE = $(srcdir)/../lib/libpe
 LIBUDIS86 = $(srcdir)/../lib/libudis86
@@ -67,6 +67,8 @@ MANDIR = $(srcdir)/../doc/manpages
 .PHONY : install uninstall clean
 
 all: $(PROGS)
+
+pesh: LDFLAGS += -lreadline
 
 pesec: LDFLAGS += -lcrypto
 pesec: compat/strlcat.c
