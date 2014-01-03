@@ -406,7 +406,7 @@ char *command_generator(const char *text, int state) {
 // region of TEXT that contains the word to complete.  We can use the
 // entire line in case we want to do some simple parsing.  Return the
 // array of matches, or NULL if there aren't any.
-char **fileman_completion(char *text, int start, int end) {
+char **pesh_completion(char *text, int start, int end) {
 	char **matches = NULL;
 
 	// If this word is at the start of the line, then it is a command
@@ -427,8 +427,8 @@ void initialize_readline() {
 	// Allow conditional parsing of the ~/.inputrc file.
  	rl_readline_name = PROGRAM;
 
-	// Tell the completer that we want a crack first.
-	rl_attempted_completion_function = (CPPFunction *)fileman_completion;
+	// Call the specified function for completion, so we have better control.
+	rl_attempted_completion_function = (CPPFunction *)pesh_completion;
 
 	// Configure readline to auto-complete paths when the tab key is hit.
 	//rl_bind_key('\t', rl_complete);
@@ -440,7 +440,6 @@ int execute_command(shell_ctx_t *shell_ctx, const char *line) {
 	static const char delimiters[] = " ";
 	char *mutable_line = strdup(line); // TODO(jweyrich): Verify if it succeeded
 	char *saved_ptr;
-	char *unknown_cmd = NULL;
 
 	const char *command_name = strtok_r(mutable_line, delimiters, &saved_ptr);
 	if (command_name == NULL) {
