@@ -733,102 +733,6 @@ static void print_dos_header(IMAGE_DOS_HEADER *header)
 	output_close_scope(); // DOS Header
 }
 
-static void print_imported_functions(pe_ctx_t *ctx, uint64_t offset)
-{
-	uint64_t ofs = offset;
-
-	char hint_str[16];
-	char fname[MAX_FUNCTION_NAME];
-	bool is_ordinal;
-
-	memset(hint_str, 0, sizeof(hint_str));
-	memset(fname, 0, sizeof(fname));
-
-	while (1) {
-		switch (ctx->pe.optional_hdr.type) {
-			case MAGIC_PE32:
-			{
-				const IMAGE_THUNK_DATA32 *thunk = LIBPE_PTR_ADD(ctx->map_addr, ofs);
-				if (!pe_can_read(ctx, thunk, sizeof(IMAGE_THUNK_DATA32))) {
-					// TODO: Should we report something?
-					return;
-				}
-
-				// Type punning
-				const uint32_t thunk_type = *(uint32_t *)thunk;
-				if (thunk_type == 0)
-					return;
-
-				is_ordinal = (thunk_type & IMAGE_ORDINAL_FLAG32) != 0;
-
-				if (is_ordinal) {
-					snprintf(hint_str, sizeof(hint_str)-1, "%"PRIu32,
-						thunk->u1.Ordinal & ~IMAGE_ORDINAL_FLAG32);
-				} else {
-					const uint64_t imp_ofs = pe_rva2ofs(ctx, thunk->u1.AddressOfData);
-					const IMAGE_IMPORT_BY_NAME *imp_name = LIBPE_PTR_ADD(ctx->map_addr, imp_ofs);
-					if (!pe_can_read(ctx, imp_name, sizeof(IMAGE_IMPORT_BY_NAME))) {
-						// TODO: Should we report something?
-						return;
-					}
-
-					snprintf(hint_str, sizeof(hint_str)-1, "%d", imp_name->Hint);
-					strncpy(fname, (char *)imp_name->Name, sizeof(fname)-1);
-					// Because `strncpy` does not guarantee to NUL terminate the string itself, this must be done explicitly.
-					fname[sizeof(fname) - 1] = '\0';
-					//size_t fname_len = strlen(fname);
-				}
-				ofs += sizeof(IMAGE_THUNK_DATA32);
-				break;
-			}
-			case MAGIC_PE64:
-			{
-				const IMAGE_THUNK_DATA64 *thunk = LIBPE_PTR_ADD(ctx->map_addr, ofs);
-				if (!pe_can_read(ctx, thunk, sizeof(IMAGE_THUNK_DATA64))) {
-					// TODO: Should we report something?
-					return;
-				}
-
-				// Type punning
-				const uint64_t thunk_type = *(uint64_t *)thunk;
-				if (thunk_type == 0)
-					return;
-
-				is_ordinal = (thunk_type & IMAGE_ORDINAL_FLAG64) != 0;
-
-				if (is_ordinal) {
-					snprintf(hint_str, sizeof(hint_str)-1, "%"PRIu64,
-						thunk->u1.Ordinal & ~IMAGE_ORDINAL_FLAG64);
-				} else {
-					uint64_t imp_ofs = pe_rva2ofs(ctx, thunk->u1.AddressOfData);
-					const IMAGE_IMPORT_BY_NAME *imp_name = LIBPE_PTR_ADD(ctx->map_addr, imp_ofs);
-					if (!pe_can_read(ctx, imp_name, sizeof(IMAGE_IMPORT_BY_NAME))) {
-						// TODO: Should we report something?
-						return;
-					}
-
-					snprintf(hint_str, sizeof(hint_str)-1, "%d", imp_name->Hint);
-					strncpy(fname, (char *)imp_name->Name, sizeof(fname)-1);
-					// Because `strncpy` does not guarantee to NUL terminate the string itself, this must be done explicitly.
-					fname[sizeof(fname) - 1] = '\0';
-					//size_t fname_len = strlen(fname);
-				}
-				ofs += sizeof(IMAGE_THUNK_DATA64);
-				break;
-			}
-		}
-
-		output_open_scope("Function", OUTPUT_SCOPE_TYPE_OBJECT);
-
-		if (is_ordinal)
-			output("Ordinal", hint_str);
-		else
-			output("Name", fname);
-
-		output_close_scope(); // Function
-	}
-}
-
 static void print_exports(pe_ctx_t *ctx)
 {
 	const IMAGE_DATA_DIRECTORY *dir = pe_directory_by_entry(ctx, IMAGE_DIRECTORY_ENTRY_EXPORT);
@@ -970,72 +874,281 @@ static void print_exports(pe_ctx_t *ctx)
 	output_close_scope(); // Exported functions
 }
 
+static void print_imported_functions(pe_ctx_t *ctx, uint64_t offset)
+{
+	bool has_valid_func = false;
+
+	uint64_t ofs = offset;
+
+	char hint_str[16] = {0};
+	char fname[MAX_FUNCTION_NAME] = {0};
+	bool is_ordinal = false;
+
+	while (1) {
+		switch (ctx->pe.optional_hdr.type) {
+			default:
+				has_valid_func = false;
+				is_ordinal = false;
+				break;
+			case MAGIC_PE32:
+			{
+				const IMAGE_THUNK_DATA32 *thunk = LIBPE_PTR_ADD(ctx->map_addr, ofs);
+				if (!pe_can_read(ctx, thunk, sizeof(IMAGE_THUNK_DATA32))) {
+					printf("### DEBUG can't read IMAGE_THUNK_DATA32\n");
+					// TODO: Should we report something?
+					return;
+				}
+
+				printf("%"PRIu32 "\n", thunk->u1.AddressOfData);
+
+				has_valid_func = thunk->u1.AddressOfData != 0;
+
+				if (!has_valid_func)
+					break;
+				
+				is_ordinal = (thunk->u1.Ordinal & IMAGE_ORDINAL_FLAG32) != 0;
+
+				if (is_ordinal) {
+					const uint32_t ordinal = thunk->u1.Ordinal & 0xffff;
+					snprintf(hint_str, sizeof(hint_str)-1, "%"PRIu32, ordinal);
+				} else {
+					const uint64_t imp_ofs = pe_rva2ofs(ctx, thunk->u1.AddressOfData);
+					//printf("thunk->u1.AddressOfData = %x, offset = %llu\n", thunk->u1.AddressOfData, imp_ofs);
+					const IMAGE_IMPORT_BY_NAME *imp_name = LIBPE_PTR_ADD(ctx->map_addr, imp_ofs);
+					if (!pe_can_read(ctx, imp_name, sizeof(IMAGE_IMPORT_BY_NAME))) {
+						// TODO: Should we report something?
+						printf("### DEBUG can't read IMAGE_IMPORT_BY_NAME\n");
+						return;
+					}
+
+					snprintf(hint_str, sizeof(hint_str)-1, "%d", imp_name->Hint);
+					strncpy(fname, (const char *)imp_name->Name, sizeof(fname)-1);
+					// Because `strncpy` does not guarantee to NUL terminate the string itself, this must be done explicitly.
+					fname[sizeof(fname) - 1] = '\0';
+					//size_t fname_len = strlen(fname);
+				}
+
+				ofs += sizeof(IMAGE_THUNK_DATA32);
+				break;
+			}
+			case MAGIC_PE64:
+			{
+				const IMAGE_THUNK_DATA64 *thunk = LIBPE_PTR_ADD(ctx->map_addr, ofs);
+				if (!pe_can_read(ctx, thunk, sizeof(IMAGE_THUNK_DATA64))) {
+					// TODO: Should we report something?
+					printf("### DEBUG can't read IMAGE_THUNK_DATA64\n");
+					return;
+				}
+
+				has_valid_func = thunk->u1.AddressOfData != 0;
+				
+				if (!has_valid_func)
+					break;
+
+				is_ordinal = (thunk->u1.Ordinal & IMAGE_ORDINAL_FLAG64) != 0;
+
+				if (is_ordinal) {
+					const uint64_t ordinal = thunk->u1.Ordinal & 0xffff;
+					snprintf(hint_str, sizeof(hint_str)-1, "%"PRIu64, ordinal);
+				} else {
+					uint64_t imp_ofs = pe_rva2ofs(ctx, thunk->u1.AddressOfData);
+					const IMAGE_IMPORT_BY_NAME *imp_name = LIBPE_PTR_ADD(ctx->map_addr, imp_ofs);
+					if (!pe_can_read(ctx, imp_name, sizeof(IMAGE_IMPORT_BY_NAME))) {
+						// TODO: Should we report something?
+						printf("### DEBUG can't read IMAGE_IMPORT_BY_NAME\n");
+						return;
+					}
+
+					snprintf(hint_str, sizeof(hint_str)-1, "%d", imp_name->Hint);
+					strncpy(fname, (const char *)imp_name->Name, sizeof(fname)-1);
+					// Because `strncpy` does not guarantee to NUL terminate the string itself, this must be done explicitly.
+					fname[sizeof(fname) - 1] = '\0';
+					//size_t fname_len = strlen(fname);
+				}
+
+				ofs += sizeof(IMAGE_THUNK_DATA64);
+				break;
+			}
+		}
+
+		if (!has_valid_func)
+			break;
+
+		output_open_scope("Function", OUTPUT_SCOPE_TYPE_OBJECT);
+
+		if (is_ordinal)
+			output("Ordinal", hint_str);
+		else
+			output("Name", fname);
+
+		output_close_scope(); // Function
+	}
+}
+
+bool is_all_zeros(void *buf, size_t size)
+{
+	unsigned char *ptr = buf;
+	for (size_t i = 0; i < size; i++) {
+		if (ptr[i] != 0)
+			return false;
+	}
+	return true;
+}
+
+static bool read_imported_dll_name(pe_ctx_t *ctx, const IMAGE_IMPORT_DESCRIPTOR *id, char *dll_name, size_t max_dll_name)
+{
+	uint64_t ofs = pe_rva2ofs(ctx, id->Name);
+	if (ofs == 0) {
+		printf("### DEBUG %s pe_rva2ofs returned 0\n", __FUNCTION__);
+		return false;
+	}
+
+	const char *dll_name_ptr = LIBPE_PTR_ADD(ctx->map_addr, ofs);
+	// Validate whether it's ok to access at least 1 byte after dll_name_ptr.
+	// It might be '\0', for example.
+	if (!pe_can_read(ctx, dll_name_ptr, 1)) {
+		printf("### DEBUG %s pe_can_read returned false\n", __FUNCTION__);
+		// TODO: Should we report something?
+		return false;
+	}
+
+	strncpy(dll_name, dll_name_ptr, max_dll_name - 1);
+	// Because `strncpy` does not guarantee to NUL terminate the string itself, this must be done explicitly.
+	dll_name[max_dll_name - 1] = '\0';
+
+	return true;
+}
+
 static void print_imports(pe_ctx_t *ctx)
 {
 	const IMAGE_DATA_DIRECTORY *dir = pe_directory_by_entry(ctx, IMAGE_DIRECTORY_ENTRY_IMPORT);
 	if (dir == NULL)
 		EXIT_ERROR("import directory not found")
 
-	const uint64_t va = dir->VirtualAddress;
+	bool parsing_iat_directly = false;
+
+	if (dir->Size == 0) {
+		parsing_iat_directly = true;
+		dir = pe_directory_by_entry(ctx, IMAGE_DIRECTORY_ENTRY_IAT);
+	}
+
+	uint64_t va = dir->VirtualAddress;
 	if (va == 0) {
-		fprintf(stderr, "import directory not found\n");
+		fprintf(stderr, parsing_iat_directly ? "iat directory not found\n" : "import directory not found\n");
 		return;
 	}
-	uint64_t ofs = pe_rva2ofs(ctx, va);
 
 	output_open_scope("Imported functions", OUTPUT_SCOPE_TYPE_ARRAY);
 
-	while (1) {
-		IMAGE_IMPORT_DESCRIPTOR *id = LIBPE_PTR_ADD(ctx->map_addr, ofs);
-		if (!pe_can_read(ctx, id, sizeof(IMAGE_IMPORT_DESCRIPTOR))) {
-			// TODO: Should we report something?
-			output_close_scope();
-			return;
-		}
+	// if (parsing_iat_directly) {
+	// 	printf("### DEBUG PARSING IAT\n");
+	//
+	// 	printf("dir->Size = %zu\n", dir->Size);
+	// 	printf("sizeof(IMAGE_IMPORT_DESCRIPTOR) = %zu\n", sizeof(IMAGE_IMPORT_DESCRIPTOR));
+	// 	const size_t count = dir->Size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
+	// 	printf("count = %zu\n", count);
+	//
+	// 	output_open_scope("Library", OUTPUT_SCOPE_TYPE_OBJECT);
+	//	
+	// 	output_open_scope("Functions", OUTPUT_SCOPE_TYPE_ARRAY);
+	//
+	// 	uint64_t ofs = pe_rva2ofs(ctx, va);
+	//
+	// 	// Search for DLL imported functions
+	// 	print_imported_functions(ctx, ofs);
+	//
+	// 	output_close_scope(); // Functions
+	//
+	// 	output_close_scope(); // Library
+	// } else {
+		const size_t count = dir->Size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
 
-		if (!id->u1.OriginalFirstThunk && !id->FirstThunk)
-			break;
+		for (size_t i = 0; i < count; ++i, va += sizeof(IMAGE_IMPORT_DESCRIPTOR))
+		{
+			uint64_t ofs = pe_rva2ofs(ctx, va);
+			const IMAGE_IMPORT_DESCRIPTOR *iid = LIBPE_PTR_ADD(ctx->map_addr, ofs);
+			if (!pe_can_read(ctx, iid, sizeof(IMAGE_IMPORT_DESCRIPTOR))) {
+				// TODO: Should we report something?
+				printf("can't read IMAGE_IMPORT_DESCRIPTOR\n");
+				break;
+			}
 
-		ofs += sizeof(IMAGE_IMPORT_DESCRIPTOR);
-		const uint64_t aux = ofs; // Store current ofs
+			// if (is_all_zeros(&iid->u1, sizeof(iid->u1))) {
+			// 	printf("iid 1st byte is 0\n");
+			// 	break;
+			// }
 
-		ofs = pe_rva2ofs(ctx, id->Name);
-		if (ofs == 0)
-			break;
+			if (iid->u1.OriginalFirstThunk == 0 && iid->FirstThunk == 0)
+				break;
 
-		const char *dll_name_ptr = LIBPE_PTR_ADD(ctx->map_addr, ofs);
-		// Validate whether it's ok to access at least 1 byte after dll_name_ptr.
-		// It might be '\0', for example.
-		if (!pe_can_read(ctx, dll_name_ptr, 1)) {
-			// TODO: Should we report something?
-			break;
-		}
+			char dll_name[MAX_DLL_NAME] = {0};
+			const bool did_read = read_imported_dll_name(ctx, iid, dll_name, sizeof(dll_name));
+			if (!did_read) {
+				printf("### DEBUG failed to read DLL name\n");
+				//output_close_scope(); // Library
+				break;
+			}
+			
+			output_open_scope("Library", OUTPUT_SCOPE_TYPE_OBJECT);
 
-		char dll_name[MAX_DLL_NAME];
-		strncpy(dll_name, dll_name_ptr, sizeof(dll_name)-1);
-		// Because `strncpy` does not guarantee to NUL terminate the string itself, this must be done explicitly.
-		dll_name[sizeof(dll_name) - 1] = '\0';
+			output("Name", dll_name);
+			
+			output_open_scope("Functions", OUTPUT_SCOPE_TYPE_ARRAY);
 
-		output_open_scope("Library", OUTPUT_SCOPE_TYPE_OBJECT);
-		output("Name", dll_name);
+			uint32_t size_of_headers = 0;
+			uint32_t size_of_image = 0;
 
-		ofs = pe_rva2ofs(ctx, id->u1.OriginalFirstThunk ? id->u1.OriginalFirstThunk : id->FirstThunk);
-		if (ofs == 0) {
+			switch (ctx->pe.optional_hdr.type) {
+				case MAGIC_ROM:
+					// Oh boy! We do not support ROM. Abort!
+					fprintf(stderr, "ROM image is not supported\n");
+					return;
+				case MAGIC_PE32:
+					size_of_headers = ctx->pe.optional_hdr._32->SizeOfHeaders;
+					size_of_image = ctx->pe.optional_hdr._32->SizeOfImage;
+					break;
+				case MAGIC_PE64:
+					size_of_headers = ctx->pe.optional_hdr._64->SizeOfHeaders;
+					size_of_image = ctx->pe.optional_hdr._64->SizeOfImage;
+					break;
+			}
+
+			uint32_t thunk = iid->u1.OriginalFirstThunk;
+
+			// See if we can use OriginalFirstThunk or the FirstThunk.
+			if ((iid->u1.OriginalFirstThunk == 0)
+				|| (iid->u1.OriginalFirstThunk < size_of_headers)
+				|| (iid->u1.OriginalFirstThunk >= size_of_image))
+			{
+				// Continue anyways, some linkers use a zero OriginalFirstThunk.
+				// Prefer using FirstThunk.
+				thunk = iid->FirstThunk;
+			}
+
+			// Find section
+			IMAGE_SECTION_HEADER *section_hdr = pe_rva2section(ctx, thunk);
+			if (section_hdr == NULL) {
+				fprintf(stderr, "Could not find find imported functions names.\n");
+				break;
+			}
+
+			// Scan imported functions.
+			thunk -= section_hdr->VirtualAddress;
+
+			while (1) {
+				// TODO(jweyrich): To be implemented.
+			}
+
+			// Search for DLL imported functions
+			ofs = pe_rva2ofs(ctx, thunk);
+
+			print_imported_functions(ctx, ofs);
+
+			output_close_scope(); // Functions
+
 			output_close_scope(); // Library
-			break;
 		}
-
-		output_open_scope("Functions", OUTPUT_SCOPE_TYPE_ARRAY);
-
-		// Search for DLL imported functions
-		print_imported_functions(ctx, ofs);
-
-		output_close_scope(); // Functions
-
-		ofs = aux; // Restore previous ofs
-
-		output_close_scope(); // Library
-	}
+	//}
 
 	output_close_scope(); // Imported functions
 }
